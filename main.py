@@ -2,6 +2,9 @@ import json
 import datetime
 import asyncio
 import logging
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
@@ -15,6 +18,43 @@ from telegram.ext import (
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Минимальный endpoint для health checks Render и внешнего мониторинга."""
+
+    def do_GET(self):
+        if self.path not in ("/health", "/health/", "/health/live"):
+            self.send_error(404, "Not Found")
+            return
+
+        payload = json.dumps(
+            {
+                "status": "ok",
+                "service": "shtk-support-bot",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format, *args):
+        logger.info("health %s", format % args)
+
+
+def start_health_server():
+    """Запускает health endpoint в фоне, не блокируя Telegram polling."""
+    port = int(os.getenv("PORT", "10000"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, name="health-server", daemon=True)
+    thread.start()
+    logger.info("Health endpoint запущен: 0.0.0.0:%s/health", port)
+    return server
 
 # Настройки
 API_TOKEN = '8296355603:AAG1cxea5g-oTPBmxCN5_mEUlR2Uofo8p20'  # Токен бота
@@ -456,6 +496,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Настройка бота
 def main():
+    start_health_server()
     app = Application.builder().token(API_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
